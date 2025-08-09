@@ -34,13 +34,12 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "hx711.h"
 #include "stdio.h"
-
+#include "kalman_angle.h"
 #include "string.h"
-
+#include "kalman.h"
 #include "math.h"
-
 #include "bno055_stm32.h"
 
 /* USER CODE END Includes */
@@ -72,7 +71,6 @@
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c2;
-I2C_HandleTypeDef hi2c3;
 
 SPI_HandleTypeDef hspi1;
 
@@ -84,9 +82,15 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 
 // --- Global Değişkenler ---
-
+KalmanAngle_t aciFiltresi_Roll;  // Roll açısı için filtre
+KalmanAngle_t aciFiltresi_Pitch; // Pitch açısı için filtre
+#define WEIGHT_AVERAGE_COUNT 50 // Ortalama alınacak okuma sayısı
+float g_weight_readings[WEIGHT_AVERAGE_COUNT];
+uint8_t g_weight_reading_index = 0;
+float g_weight_sum = 0.0f;
+hx711_t loadcell;
 volatile uint32_t g_current_pwm = 0;
-
+Kalman_t hizFiltresi;
 volatile uint32_t g_target_pwm = 0;
 
 volatile uint32_t g_last_ramp_time = 0;
@@ -136,7 +140,6 @@ static void MX_USART2_UART_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_SPI1_Init(void);
-static void MX_I2C3_Init(void);
 static void MX_I2C2_Init(void);
 /* USER CODE BEGIN PFP */
 
@@ -200,12 +203,18 @@ int main(void)
   MX_TIM1_Init();
   MX_TIM2_Init();
   MX_SPI1_Init();
-  MX_I2C3_Init();
   MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
-
+  float Q_angle = 0.001f;
+  float Q_bias = 0.03f;   // DEĞERİ 10 KAT ARTIRDIK (daha agresif sapma düzeltmesi için)
+  float R_measure = 0.03f;
+  Kalman_InitAngle(&aciFiltresi_Roll, Q_angle, Q_bias, R_measure);
+  Kalman_InitAngle(&aciFiltresi_Pitch, Q_angle, Q_bias, R_measure);
+  float calibration_factor = -3.1073f;
+  set_scale(&loadcell, calibration_factor, 1.0f);
 HAL_TIM_PWM_Start(&htim1, MOTOR_PWM_CHANNEL);
-
+#define R_HIZ_NORMAL     0.3f   // Normal çalışırken kullanılacak pürüzsüz ayar
+#define R_HIZ_YAVASLAMA  0.05f
 HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
 
 HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_3);
@@ -259,7 +268,27 @@ printf("HATA: BNO055 baslatilamadi! Baglantilari kontrol edin.\n");
 printf("Komutlar: 'i', 'g', 'd'. Motoru calistirmak icin butona basili tutun.\n\n");
 
 fflush(stdout);
+printf("HX711 Agirlik Sensoru baslatiliyor...\n");
+  fflush(stdout);
 
+  // HX711'i, CubeMX'te ayarladığımız pinleri kullanarak başlat
+  hx711_init(&loadcell, HX711_SCK_GPIO_Port, HX711_SCK_Pin, HX711_DT_GPIO_Port, HX711_DT_Pin);
+
+  HAL_Delay(500); // Sensörün stabil hale gelmesi için bekle
+
+  printf("Dara aliniyor (agirligi sifirlaniyor). Lutfen tartiyi bos tutun.\n");
+  tare(&loadcell, 20, CHANNEL_A);
+  printf("Dara alma tamamlandi.\n");
+  fflush(stdout);
+  printf("Kalman filtresi baslatiliyor...\n");
+  fflush(stdout);
+
+  // Kalman filtresini hız için başlat
+  // Bu Q ve R değerleri başlangıç için iyidir, deneme yanılma ile ayarlayabilirsiniz.
+  float Q_hiz = 0.01f;  // İşlem gürültüsü - sistemin ne kadar hızlı değişmesini beklediğimiz
+  float R_hiz = 0.3f;   // Ölçüm gürültüsü - enkoder okumasının ne kadar gürültülü olduğu
+  float P_hiz = 1.0f;
+  Kalman_Init(&hizFiltresi, Q_hiz, R_hiz, P_hiz, 0.0f); // 0.0f = başlangıç hızı
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -427,7 +456,7 @@ static void MX_I2C2_Init(void)
 
   /* USER CODE END I2C2_Init 1 */
   hi2c2.Instance = I2C2;
-  hi2c2.Init.ClockSpeed = 400000;
+  hi2c2.Init.ClockSpeed = 100000;
   hi2c2.Init.DutyCycle = I2C_DUTYCYCLE_2;
   hi2c2.Init.OwnAddress1 = 0;
   hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
@@ -442,40 +471,6 @@ static void MX_I2C2_Init(void)
   /* USER CODE BEGIN I2C2_Init 2 */
 
   /* USER CODE END I2C2_Init 2 */
-
-}
-
-/**
-  * @brief I2C3 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_I2C3_Init(void)
-{
-
-  /* USER CODE BEGIN I2C3_Init 0 */
-
-  /* USER CODE END I2C3_Init 0 */
-
-  /* USER CODE BEGIN I2C3_Init 1 */
-
-  /* USER CODE END I2C3_Init 1 */
-  hi2c3.Instance = I2C3;
-  hi2c3.Init.ClockSpeed = 100000;
-  hi2c3.Init.DutyCycle = I2C_DUTYCYCLE_2;
-  hi2c3.Init.OwnAddress1 = 0;
-  hi2c3.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-  hi2c3.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-  hi2c3.Init.OwnAddress2 = 0;
-  hi2c3.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-  hi2c3.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN I2C3_Init 2 */
-
-  /* USER CODE END I2C3_Init 2 */
 
 }
 
@@ -709,7 +704,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0|GPIO_PIN_2, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0|HX711_SCK_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pins : PC0 PC2 */
   GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_2;
@@ -730,12 +725,18 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PB0 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
+  /*Configure GPIO pins : PB0 HX711_SCK_Pin */
+  GPIO_InitStruct.Pin = GPIO_PIN_0|HX711_SCK_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : HX711_DT_Pin */
+  GPIO_InitStruct.Pin = HX711_DT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(HX711_DT_GPIO_Port, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI3_IRQn, 0, 0);
@@ -1022,103 +1023,109 @@ fflush(stdout);
 
 
 void UpdateAndDisplayTelemetry(void)
-
 {
+    // --- ENKODER HIZ HESAPLAMA KISMI (DEĞİŞTİRİLMEDİ) ---
 
-// --- 1. BÖLÜM: ENKODER HESAPLAMALARI (Bu kısım doğru, dokunmuyoruz) ---
-
-int32_t current_count = (int32_t)__HAL_TIM_GET_COUNTER(&htim2) * -1;
-
-int32_t count_delta = current_count - g_encoder_last_count;
-
-
-
-// Hız Filtresi (Moving Average)
-
-float raw_speed_rpm = ((float)count_delta / ENCODER_PPR / (TELEMETRY_PERIOD_MS / 1000.0f)) * 60.0f;
-
-g_speed_history[g_speed_history_index] = raw_speed_rpm;
-
-g_speed_history_index = (g_speed_history_index + 1) % MOVING_AVG_SIZE;
-
-float total_speed = 0.0f;
-
-for (int i = 0; i < MOVING_AVG_SIZE; i++) {
-
-total_speed += g_speed_history[i];
-
-}
-
-float smoothed_speed_rpm = total_speed / MOVING_AVG_SIZE;
-
-float total_distance_cm = ((float)current_count / ENCODER_PPR) * WHEEL_CIRCUMFERENCE_CM;
-
-
-
-
-
-// --- 2. BÖLÜM: VERİLERİ YAZDIRMA (DÜZELTİLMİŞ HALİ) ---
-
-
-
-// Enkoder verilerini yazdır
-
-printf("Enkoder -> Mesafe: %7.2f cm | Hiz: %6.1f RPM\n", total_distance_cm, smoothed_speed_rpm);
-
-
-
-// IMU verilerini yazdır
-
-if (imu_baslatildi) {
-
-// DÜZELTME 1: Doğrudan 3 eksen Euler açılarını okuyan basit fonksiyona geri dönüldü.
-
-bno055_vector_t euler = bno055_getVectorEuler();
+    // 1. Enkoderin mevcut sayımını al (yön düzeltmesiyle birlikte).
+    int32_t current_count = (int32_t)__HAL_TIM_GET_COUNTER(&htim2) * -1;
+    // 2. Son ölçümden bu yana geçen süreyi saniye cinsinden hesapla.
+    float delta_time_sec = (TELEMETRY_PERIOD_MS > 0) ? (TELEMETRY_PERIOD_MS / 1000.0f) : 0.0f;
+    // 3. Son ölçümden bu yana sayacın ne kadar değiştiğini bul (delta).
+    int32_t count_delta = current_count - g_encoder_last_count;
+    // 4. Bir sonraki hesaplama için 'son sayım' değerini şimdi güncelle.
+    g_encoder_last_count = current_count;
+    // 5. Ham hızı RPM (Dakikadaki Devir) olarak hesapla.
+    float raw_speed_rpm = 0.0f;
+    if (delta_time_sec > 0)
+    {
+        raw_speed_rpm = ((float)count_delta / ENCODER_PPR) / (delta_time_sec / 60.0f);
+    }
+    // 6. Yürüyen Ortalama Filtresi
+    g_speed_history[g_speed_history_index] = raw_speed_rpm;
+    g_speed_history_index = (g_speed_history_index + 1) % MOVING_AVG_SIZE;
+    float total_speed = 0.0f;
+    for (int i = 0; i < MOVING_AVG_SIZE; i++) {
+        total_speed += g_speed_history[i];
+    }
+    float smoothed_speed_rpm = total_speed / MOVING_AVG_SIZE;
+    // Adaptif Filtre Ayarı
+    if (g_target_motor_state == MOTOR_DURDU) {
+        Kalman_SetR(&hizFiltresi, R_HIZ_YAVASLAMA);
+    } else {
+        Kalman_SetR(&hizFiltresi, R_HIZ_NORMAL);
+    }
+    // Kalman Filtresi Güncellemesi
+    float filtrelenmis_hiz = Kalman_Update(&hizFiltresi, smoothed_speed_rpm);
+    // Nihai Sıfırlama Kontrolü
+    if (smoothed_speed_rpm < 1.0f) {
+        filtrelenmis_hiz = 0.0f;
+        Kalman_Reset(&hizFiltresi, 0.0f);
+    }
+    // Toplam mesafeyi hesapla
+    float total_distance_cm = ((float)current_count / ENCODER_PPR) * WHEEL_CIRCUMFERENCE_CM;
+    // Sonuçları Ekrana Yazdır
+    printf("Enkoder -> Mesafe: %7.2f cm | Hiz: %6.1f RPM | Kalman Hiz: %6.1f RPM\n",
+              total_distance_cm, smoothed_speed_rpm, filtrelenmis_hiz);
 
 
+    // --- YENİ VE GÜNCELLENMİŞ IMU KISMI ---
+    if (imu_baslatildi) {
+        // İki ölçüm arasında geçen süreyi tekrar hesapla (aynı dt'yi kullanıyoruz)
+        // float dt = (TELEMETRY_PERIOD_MS > 0) ? (TELEMETRY_PERIOD_MS / 1000.0f) : 0.0f; // Zaten yukarıda hesaplandı
 
-// DÜZELTME 2: Kalibrasyon fonksiyonu doğru şekilde çağrıldı ve doğru struct kullanıldı.
+        // 1. HAM SENSÖR VERİLERİNİ OKU
+        bno055_vector_t accel = bno055_getVectorAccelerometer();
+        bno055_vector_t gyro = bno055_getVectorGyroscope();
 
-bno055_calibration_state_t cal = bno055_getCalibrationState();
+        // 2. ROLL AÇISI İÇİN FİLTRELEME
+        float roll_acc = atan2f(accel.y, accel.z) * 180.0f / M_PI;
+        float gyro_rate_x = gyro.x;
+        float filtrelenmis_roll = Kalman_UpdateAngle(&aciFiltresi_Roll, roll_acc, gyro_rate_x, delta_time_sec);
 
+        // 3. PITCH AÇISI İÇİN FİLTRELEME
+        float pitch_acc = atan2f(-accel.x, sqrtf(accel.y * accel.y + accel.z * accel.z)) * 180.0f / M_PI;
+        float gyro_rate_y = gyro.y;
+        float filtrelenmis_pitch = Kalman_UpdateAngle(&aciFiltresi_Pitch, pitch_acc, gyro_rate_y, delta_time_sec);
 
-
-// DÜZELTME 3: printf güncellenerek 3 eksen de (Yaw, Roll, Pitch) yazdırıldı.
-
-printf("IMU -> Yaw: %6.1f | Roll: %6.1f | Pitch: %6.1f | Kalibrasyon [S:%d J:%d I:%d M:%d]\n",
-
-euler.x, euler.y, euler.z,
-
-cal.sys, cal.gyro, cal.accel, cal.mag);
-
-}
-
-
-
-// --- 3. BÖLÜM: BAŞLANGIÇ NOKTASI KONTROLÜ (Bu kısım doğru, dokunmuyoruz) ---
-
-if (fabs(total_distance_cm) < 0.5f && !g_start_point_message_sent)
-
-{
-
-printf("--- Başlangıç noktasına geri dönüldü! ---\n");
-
-g_start_point_message_sent = true;
-
-}
-
-else if (fabs(total_distance_cm) > 2.0f)
-
-{
-
-g_start_point_message_sent = false;
-
-}
+        // 4. SONUÇLARI YAZDIR
+        // Yaw açısını hala BNO055'in kendi (manyetometre destekli) filtresinden almak en iyisidir.
+        bno055_vector_t euler = bno055_getVectorEuler();
+        bno055_calibration_state_t cal = bno055_getCalibrationState();
+        printf("IMU     -> Yaw: %6.1f | Filt-Roll: %6.1f | Filt-Pitch: %6.1f | Kalibrasyon [S:%d J:%d I:%d M:%d]\n",
+               euler.x,           // BNO'nun kendi kararlı Yaw verisi
+               filtrelenmis_roll,   // Bizim filtremizden gelen Roll
+               filtrelenmis_pitch,  // Bizim filtremizden gelen Pitch
+               cal.sys, cal.gyro, cal.accel, cal.mag);
+    }
+    // ------------------------------------
 
 
+    // --- BAŞLANGIÇ NOKTASI KISMI (DEĞİŞTİRİLMEDİ) ---
+    if (fabs(total_distance_cm) < 0.5f && !g_start_point_message_sent)
+    {
+        printf("--- Başlangıç noktasına geri dönüldü! ---\n");
+        g_start_point_message_sent = true;
+    }
+    else if (fabs(total_distance_cm) > 2.0f)
+    {
+        g_start_point_message_sent = false;
+    }
 
-g_encoder_last_count = current_count;
+    // --- AĞIRLIK SENSÖRÜ KISMI (DEĞİŞTİRİLMEDİ) ---
+    float new_weight = get_weight_single_reading(&loadcell, CHANNEL_A);
+    g_weight_sum -= g_weight_readings[g_weight_reading_index];
+    g_weight_readings[g_weight_reading_index] = new_weight;
+    g_weight_sum += new_weight;
+    g_weight_reading_index++;
+    if (g_weight_reading_index >= WEIGHT_AVERAGE_COUNT) {
+       g_weight_reading_index = 0;
+    }
+    float avg_weight = g_weight_sum / WEIGHT_AVERAGE_COUNT;
+    printf("Agirlik -> %.2f gr\n", avg_weight);
 
+    // Son olarak satır atlayarak telemetri bloğunu bitir
+    printf("\n");
+    fflush(stdout);
 }
 
 /* USER CODE END 4 */
