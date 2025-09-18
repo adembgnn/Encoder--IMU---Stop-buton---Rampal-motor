@@ -6,8 +6,8 @@ const char* ssid = "Deptron-Mint 2.4G";
 const char* password = "deptron1974";
 
 // MQTT Broker Bilgileri
-const char* mqtt_server = "192.168.31.9";
-const int mqtt_port = 1884;
+const char* mqtt_server = "192.168.31.11";
+const int mqtt_port = 1883;
 const char* mqtt_topic_sub = "broker/commands";
 const char* mqtt_client_id = "esp32-robot-car";
 
@@ -17,25 +17,25 @@ PubSubClient client(espClient);
 
 // Motor Sürücü Pinleri (L298N veya benzeri)
 // Motor 1 (ön-sol)
-const int motor1_pwm_pin = 13;
-const int motor1_dir_pin = 12;
+const int motor1_pwm_pin = 26;
+const int motor1_dir_pin = 32;
 
 // Motor 2 (ön-sağ)
-const int motor2_pwm_pin = 27;
-const int motor2_dir_pin = 26;
+const int motor2_pwm_pin = 25;
+const int motor2_dir_pin = 33;
 
 // Motor 3 (arka-sol)
-const int motor3_pwm_pin = 25;
-const int motor3_dir_pin = 33;
+const int motor3_pwm_pin = 14;
+const int motor3_dir_pin = 16;
 
 // Motor 4 (arka-sağ)
-const int motor4_pwm_pin = 32;
-const int motor4_dir_pin = 35;
+const int motor4_pwm_pin = 27;
+const int motor4_dir_pin = 17;
 
 // PWM frekans ve çözünürlük ayarları
 const int freq = 30000;
 const int resolution = 8;
-const int max_speed = 255; // 8-bit çözünürlük için maksimum hız
+const int max_speed = 125; // 8-bit çözünürlük için maksimum hız
 
 // --- Motor Hızını Ayarlama Fonksiyonu ---
 void setMotorSpeed(int pwmPin, int dirPin, int speed, int direction) {
@@ -72,8 +72,8 @@ void moveBackward(int speed) {
   Serial.println(speed);
 }
 
-// --- Sol Dönüş Fonksiyonu ---
-void turnLeft(int speed) {
+// --- Sag Dönüş Fonksiyonu ---
+void turnRight(int speed) {
   setMotorSpeed(motor1_pwm_pin, motor1_dir_pin, speed, HIGH);
   setMotorSpeed(motor2_pwm_pin, motor2_dir_pin, speed, HIGH);
   setMotorSpeed(motor3_pwm_pin, motor3_dir_pin, speed, LOW);
@@ -82,8 +82,8 @@ void turnLeft(int speed) {
   Serial.println(speed);
 }
 
-// --- Sağ Dönüş Fonksiyonu ---
-void turnRight(int speed) {
+// --- Sol Dönüş Fonksiyonu ---
+void turnLeft(int speed) {
   setMotorSpeed(motor1_pwm_pin, motor1_dir_pin, speed, LOW);
   setMotorSpeed(motor2_pwm_pin, motor2_dir_pin, speed, LOW);
   setMotorSpeed(motor3_pwm_pin, motor3_dir_pin, speed, HIGH);
@@ -107,15 +107,15 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
   // Gelen mesaja göre motorları kontrol et
   if (strcmp(topic, mqtt_topic_sub) == 0) {
-    if (message.equals("forward")) {
+    if (message.equals("f")) {
       moveForward(max_speed);
-    } else if (message.equals("backward")) {
+    } else if (message.equals("b")) {
       moveBackward(max_speed);
-    } else if (message.equals("left")) {
+    } else if (message.equals("l")) {
       turnLeft(max_speed);
-    } else if (message.equals("right")) {
+    } else if (message.equals("r")) {
       turnRight(max_speed);
-    } else if (message.equals("stop")) {
+    } else if (message.equals("s")) {
       stopMotors();
     }
   }
