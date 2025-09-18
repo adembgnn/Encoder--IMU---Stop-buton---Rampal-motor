@@ -1,0 +1,197 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+
+// Wi-Fi Bilgileri
+const char* ssid = "Deptron-Mint 2.4G";
+const char* password = "deptron1974";
+
+// MQTT Broker Bilgileri
+const char* mqtt_server = "192.168.31.9";
+const int mqtt_port = 1884;
+const char* mqtt_topic_sub = "broker/commands";
+const char* mqtt_client_id = "esp32-robot-car";
+
+// Wi-Fi ve MQTT istemci nesneleri
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// Motor Sürücü Pinleri (L298N veya benzeri)
+// Motor 1 (ön-sol)
+const int motor1_pwm_pin = 13;
+const int motor1_dir_pin = 12;
+
+// Motor 2 (ön-sağ)
+const int motor2_pwm_pin = 27;
+const int motor2_dir_pin = 26;
+
+// Motor 3 (arka-sol)
+const int motor3_pwm_pin = 25;
+const int motor3_dir_pin = 33;
+
+// Motor 4 (arka-sağ)
+const int motor4_pwm_pin = 32;
+const int motor4_dir_pin = 35;
+
+// PWM frekans ve çözünürlük ayarları
+const int freq = 30000;
+const int resolution = 8;
+const int max_speed = 255; // 8-bit çözünürlük için maksimum hız
+
+// --- Motor Hızını Ayarlama Fonksiyonu ---
+void setMotorSpeed(int pwmPin, int dirPin, int speed, int direction) {
+  digitalWrite(dirPin, direction);
+  ledcWrite(pwmPin, speed); // ledcAttach ile PWM pinine yazma
+}
+
+// --- Tüm Motorları Durdurma Fonksiyonu ---
+void stopMotors() {
+  ledcWrite(motor1_pwm_pin, 0);
+  ledcWrite(motor2_pwm_pin, 0);
+  ledcWrite(motor3_pwm_pin, 0);
+  ledcWrite(motor4_pwm_pin, 0);
+  Serial.println("Tüm motorlar durduruldu.");
+}
+
+// --- İleri Hareket Fonksiyonu ---
+void moveForward(int speed) {
+  setMotorSpeed(motor1_pwm_pin, motor1_dir_pin, speed, HIGH);
+  setMotorSpeed(motor2_pwm_pin, motor2_dir_pin, speed, LOW);
+  setMotorSpeed(motor3_pwm_pin, motor3_dir_pin, speed, HIGH);
+  setMotorSpeed(motor4_pwm_pin, motor4_dir_pin, speed, LOW);
+  Serial.print("İleri hareket, hız: ");
+  Serial.println(speed);
+}
+
+// --- Geri Hareket Fonksiyonu ---
+void moveBackward(int speed) {
+  setMotorSpeed(motor1_pwm_pin, motor1_dir_pin, speed, LOW);
+  setMotorSpeed(motor2_pwm_pin, motor2_dir_pin, speed, HIGH);
+  setMotorSpeed(motor3_pwm_pin, motor3_dir_pin, speed, LOW);
+  setMotorSpeed(motor4_pwm_pin, motor4_dir_pin, speed, HIGH);
+  Serial.print("Geri hareket, hız: ");
+  Serial.println(speed);
+}
+
+// --- Sol Dönüş Fonksiyonu ---
+void turnLeft(int speed) {
+  setMotorSpeed(motor1_pwm_pin, motor1_dir_pin, speed, HIGH);
+  setMotorSpeed(motor2_pwm_pin, motor2_dir_pin, speed, HIGH);
+  setMotorSpeed(motor3_pwm_pin, motor3_dir_pin, speed, LOW);
+  setMotorSpeed(motor4_pwm_pin, motor4_dir_pin, speed, LOW);
+  Serial.print("Sol dönüş, hız: ");
+  Serial.println(speed);
+}
+
+// --- Sağ Dönüş Fonksiyonu ---
+void turnRight(int speed) {
+  setMotorSpeed(motor1_pwm_pin, motor1_dir_pin, speed, LOW);
+  setMotorSpeed(motor2_pwm_pin, motor2_dir_pin, speed, LOW);
+  setMotorSpeed(motor3_pwm_pin, motor3_dir_pin, speed, HIGH);
+  setMotorSpeed(motor4_pwm_pin, motor4_dir_pin, speed, HIGH);
+  Serial.print("Sağ dönüş, hız: ");
+  Serial.println(speed);
+}
+
+// --- MQTT Mesaj Geldiğinde Çalışacak Fonksiyon ---
+void callback(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Gelen mesaj konusu: ");
+  Serial.println(topic);
+  
+  // Mesaj içeriğini String'e çevir
+  String message = "";
+  for (int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+  Serial.print("Mesaj: ");
+  Serial.println(message);
+
+  // Gelen mesaja göre motorları kontrol et
+  if (strcmp(topic, mqtt_topic_sub) == 0) {
+    if (message.equals("forward")) {
+      moveForward(max_speed);
+    } else if (message.equals("backward")) {
+      moveBackward(max_speed);
+    } else if (message.equals("left")) {
+      turnLeft(max_speed);
+    } else if (message.equals("right")) {
+      turnRight(max_speed);
+    } else if (message.equals("stop")) {
+      stopMotors();
+    }
+  }
+}
+
+// --- Wi-Fi Bağlantısını Kurma Fonksiyonu ---
+void setup_wifi() {
+  delay(10);
+  Serial.println();
+  Serial.print("Wi-Fi ağına bağlanılıyor: ");
+  Serial.println(ssid);
+
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("");
+  Serial.println("Wi-Fi'ye başarıyla bağlanıldı!");
+  Serial.print("IP Adresi: ");
+  Serial.println(WiFi.localIP());
+}
+
+// --- MQTT Broker'a Bağlanma Fonksiyonu ---
+void reconnect_mqtt() {
+  while (!client.connected()) {
+    Serial.print("MQTT broker'ına bağlanılıyor...");
+    if (client.connect(mqtt_client_id)) {
+      Serial.println("bağlantı başarılı!");
+      client.subscribe(mqtt_topic_sub);
+      Serial.print("Konuya abone olundu: ");
+      Serial.println(mqtt_topic_sub);
+    } else {
+      Serial.print("bağlantı başarısız, rc=");
+      Serial.print(client.state());
+      Serial.println(". Yeniden deneniyor...");
+      delay(5000);
+    }
+  }
+}
+
+// --- Başlangıç Ayarları ---
+void setup() {
+  Serial.begin(115200);
+  
+  Serial.println("Motor pinleri yapılandırılıyor...");
+  
+  // Yeni API: ledcAttach ile pinleri frekans ve çözünürlükle bağla
+  ledcAttach(motor1_pwm_pin, freq, resolution);
+  ledcAttach(motor2_pwm_pin, freq, resolution);
+  ledcAttach(motor3_pwm_pin, freq, resolution);
+  ledcAttach(motor4_pwm_pin, freq, resolution);
+  
+  // Yön pinlerini çıkış olarak ayarla
+  pinMode(motor1_dir_pin, OUTPUT);
+  pinMode(motor2_dir_pin, OUTPUT);
+  pinMode(motor3_dir_pin, OUTPUT);
+  pinMode(motor4_dir_pin, OUTPUT);
+  
+  // Wi-Fi bağlantısını kur
+  setup_wifi();
+  
+  // MQTT sunucusunu ayarla
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback);
+
+  // Başlangıçta tüm motorları durdur
+  stopMotors();
+}
+
+// --- Ana Döngü ---
+void loop() {
+  if (!client.connected()) {
+    reconnect_mqtt();
+  }
+  client.loop();
+}
